@@ -69,12 +69,25 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	mimeType, _, err := mime.ParseMediaType(mediaType)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Error parsing media type", err)
+		return
+	}
+
+	if mimeType != "image/jpeg" && mimeType != "image/png" {
+		respondWithError(w, http.StatusUnsupportedMediaType, "Not valid mime type, only JPEG and PNG are accepted", err)
+		return
+
+	}
+
 	extensions, err := mime.ExtensionsByType(mediaType)
 
 	fileExt := ".bin" // Default fallback
 	if err == nil && len(extensions) > 0 {
 		fileExt = extensions[0]
 	}
+
 	filePath := filepath.Join(cfg.assetsRoot, videoIDString) + fileExt
 	thumbnailFile, err := os.Create(filePath)
 	if err != nil {
