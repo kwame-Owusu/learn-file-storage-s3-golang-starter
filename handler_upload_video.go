@@ -3,7 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"log"
 	"mime"
@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"fmt"
+
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -95,13 +96,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	// put object into s3 bucket
 	key := make([]byte, 32)
 	rand.Read(key)
-	randomBase64String := base64.RawURLEncoding.EncodeToString(key)
-	fileS3Key := randomBase64String + ".mp4"
+	randomHexString := hex.EncodeToString(key)
+	fileS3Key := randomHexString + ".mp4"
 
-	s3Params := s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &fileS3Key, Body: file, ContentType: &contentType}
+	s3Params := s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &fileS3Key, Body: tempFile, ContentType: &contentType}
 	cfg.s3Client.PutObject(r.Context(), &s3Params)
 
-	videoUrl := fmt.Sprintf("http://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fileS3Key)
+	videoUrl := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fileS3Key)
 
 	videoMetadata.VideoURL = &videoUrl
 	err = cfg.db.UpdateVideo(videoMetadata)
