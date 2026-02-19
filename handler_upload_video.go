@@ -1,9 +1,17 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"io"
+	"log"
+	"mime"
 	"net/http"
+	"os"
 
+	"fmt"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
@@ -40,16 +48,83 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusNotFound, "Could not find video", err)
 		return
 	}
+
+	if videoMetadata.CreateVideoParams.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "Your are not authorized", err)
+		return
+	}
+
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
 		return
 	}
 
-	if videoMetadata.CreateVideoParams.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "Your are not authorized", err)
+	// parse uploaded video file
+	file, header, err := r.FormFile("video")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
-
 	}
+	defer file.Close()
+
+	contentType := header.Header.Get("Content-Type")
+	isCorrectMimeType := checkMimeTypeMp4(contentType)
+	if !isCorrectMimeType {
+		respondWithError(w, http.StatusBadRequest, "Incorrect mime type, need video/mp4", err)
+		return
+	}
+
+	// save to temporary file on disk
+	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error creating temp file", err)
+		return
+	}
+
+	defer os.Remove(tempFile.Name()) // clean up
+	defer tempFile.Close()
+
+	if _, err := io.Copy(tempFile, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error copying file to tempFile", err)
+		return
+	}
+
+	// this allows us to read the file again from the beginning
+	tempFile.Seek(0, io.SeekStart)
+
+	// put object into s3 bucket
+	key := make([]byte, 32)
+	rand.Read(key)
+	randomBase64String := base64.RawURLEncoding.EncodeToString(key)
+	fileS3Key := randomBase64String + ".mp4"
+
+	s3Params := s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &fileS3Key, Body: file, ContentType: &contentType}
+	cfg.s3Client.PutObject(r.Context(), &s3Params)
+
+	videoUrl := fmt.Sprintf("http://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fileS3Key)
+
+	videoMetadata.VideoURL = &videoUrl
+	err = cfg.db.UpdateVideo(videoMetadata)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error updating video", err)
+		return
+	}
+
+}
+
+// checks if the uploaded file is an mp4 video
+func checkMimeTypeMp4(contentType string) bool {
+	mimeType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		log.Printf("Error parsing media type from Content-Type")
+		return false
+	}
+
+	if mimeType != "video/mp4" {
+		return false
+	}
+
+	return true
 }
 
 func checkUploadSize(w http.ResponseWriter, r *http.Request) bool {
