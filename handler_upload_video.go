@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"fmt"
 
@@ -82,12 +86,28 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	defer os.Remove(tempFile.Name()) // clean up
 	defer tempFile.Close()
+	defer os.Remove(tempFile.Name()) // clean up
 
 	if _, err := io.Copy(tempFile, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error copying file to tempFile", err)
 		return
+	}
+
+	videoAspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	var videoS3Prefix string
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error getting video aspect ratio", err)
+		return
+	}
+
+	switch videoAspectRatio {
+	case "16:9":
+		videoS3Prefix = "landscape/"
+	case "9:16":
+		videoS3Prefix = "portrait/"
+	default:
+		videoS3Prefix = "other/"
 	}
 
 	// this allows us to read the file again from the beginning
@@ -97,7 +117,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	key := make([]byte, 32)
 	rand.Read(key)
 	randomHexString := hex.EncodeToString(key)
-	fileS3Key := randomHexString + ".mp4"
+	fileS3Key := videoS3Prefix + randomHexString + ".mp4"
 
 	s3Params := s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &fileS3Key, Body: tempFile, ContentType: &contentType}
 	cfg.s3Client.PutObject(r.Context(), &s3Params)
@@ -111,6 +131,66 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	type FFProbeResult struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+
+	var outBuf = new(bytes.Buffer)
+
+	ffprobeArgs := []string{"-v", "error", "-print_format", "json", "-show_streams", filePath}
+	ffpropeCmd := exec.Command("ffprobe", ffprobeArgs...)
+	ffpropeCmd.Stdout = outBuf
+
+	if err := ffpropeCmd.Run(); err != nil {
+		return "", fmt.Errorf("Error running ffprope command, %w", err)
+	}
+
+	res := FFProbeResult{}
+	err := json.Unmarshal(outBuf.Bytes(), &res)
+	if err != nil {
+		return "", fmt.Errorf("Error unmarshaling bytes into ratio struct, %w", err)
+	}
+
+	// Safety check: ensure we actually got a stream back
+	if len(res.Streams) == 0 {
+		return "", fmt.Errorf("no streams found in video")
+	}
+
+	aspectRatio := determineStandardRatio(res.Streams[0].Width, res.Streams[0].Height)
+
+	return aspectRatio, nil
+}
+
+func determineStandardRatio(w, h int) string {
+	if h == 0 {
+		return "other"
+	}
+
+	ratio := float64(w) / float64(h)
+
+	// Define standard ratios as decimals
+	const (
+		r16x9 = 16.0 / 9.0 // 1.777...
+		r9x16 = 9.0 / 16.0 // 0.5625
+	)
+
+	// Use a small epsilon for "near matches"
+	epsilon := 0.02
+
+	switch {
+	case math.Abs(ratio-r16x9) < epsilon:
+		return "16:9"
+	case math.Abs(ratio-r9x16) < epsilon:
+		return "9:16"
+	default:
+		return "other"
+	}
 }
 
 // checks if the uploaded file is an mp4 video
