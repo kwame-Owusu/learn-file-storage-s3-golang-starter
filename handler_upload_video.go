@@ -119,7 +119,26 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	randomHexString := hex.EncodeToString(key)
 	fileS3Key := videoS3Prefix + randomHexString + ".mp4"
 
-	s3Params := s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &fileS3Key, Body: tempFile, ContentType: &contentType}
+	processedVideoPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video for fast start", err)
+		return
+	}
+
+	processedVideoFile, err := os.Open(processedVideoPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error opening processed video file", err)
+		return
+	}
+
+	defer processedVideoFile.Close()
+	defer os.Remove(processedVideoPath)
+
+	s3Params := s3.PutObjectInput{
+		Bucket:      &cfg.s3Bucket,
+		Key:         &fileS3Key,
+		Body:        processedVideoFile,
+		ContentType: &contentType}
 	cfg.s3Client.PutObject(r.Context(), &s3Params)
 
 	videoUrl := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fileS3Key)
@@ -131,6 +150,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+}
+
+func processVideoForFastStart(filepath string) (string, error) {
+	outputFilePath := filepath + ".processing"
+
+	ffmpegArgs := []string{"-i", "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath}
+	ffmpegCmd := exec.Command("ffprobe", ffmpegArgs...)
+
+	if err := ffmpegCmd.Run(); err != nil {
+		return "", fmt.Errorf("Error running ffmpeg command, %w", err)
+	}
+
+	return outputFilePath, nil
 }
 
 func getVideoAspectRatio(filePath string) (string, error) {
