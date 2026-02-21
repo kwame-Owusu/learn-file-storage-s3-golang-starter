@@ -155,8 +155,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 func processVideoForFastStart(filepath string) (string, error) {
 	outputFilePath := filepath + ".processing"
 
-	ffmpegArgs := []string{"-i", "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath}
-	ffmpegCmd := exec.Command("ffprobe", ffmpegArgs...)
+	ffmpegArgs := []string{"-i", filepath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath}
+	ffmpegCmd := exec.Command("ffmpeg", ffmpegArgs...)
 
 	if err := ffmpegCmd.Run(); err != nil {
 		return "", fmt.Errorf("Error running ffmpeg command, %w", err)
