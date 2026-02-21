@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"fmt"
@@ -153,10 +154,37 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	signedVideo, err := cfg.dbVideoToSignedVideo(videoMetadata)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error signing video url", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, signedVideo)
+
 }
 
 func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
-	return database.Video{}, nil
+	// Check if URL exists
+	if video.VideoURL == nil {
+		return video, nil
+	}
+
+	// index 0 is bucket and 1 is the key
+	splitUrl := strings.Split(*video.VideoURL, ",")
+	// Check if we actually got two parts
+	if len(splitUrl) < 2 {
+		return video, nil
+	}
+
+	presignedUrl, err := generatePresignedURL(cfg.s3Client, splitUrl[0], splitUrl[1], time.Duration(time.Minute*30))
+	if err != nil {
+		return database.Video{}, fmt.Errorf("Error generating presigned url")
+	}
+
+	video.VideoURL = &presignedUrl
+
+	return video, nil
 }
 
 func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
